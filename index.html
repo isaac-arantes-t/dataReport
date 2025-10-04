@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MVP: Map/Space Analyzer</title>
+  <style>
+    :root{--accent:#0b76ff;--sel:#ffb400;--bg:#0f1720;--panel:#0b1220}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Arial;background:linear-gradient(180deg,#071024 0%, #071422 100%);color:#e6eef8}
+    .app{display:flex;height:100vh;gap:12px;padding:12px;box-sizing:border-box}
+
+    /* left: controls + reports */
+    .sidebar{width:320px;min-width:240px;background:rgba(3,11,23,0.6);border-radius:10px;padding:12px;box-sizing:border-box;display:flex;flex-direction:column}
+    h2{margin:6px 0 12px 0;font-size:18px}
+    .controls{display:flex;gap:8px;margin-bottom:8px}
+    .controls button{flex:1;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit;cursor:pointer}
+    .controls button.active{background:var(--accent);color:#041226}
+
+    .legend{font-size:13px;margin:8px 0}
+
+    .reports{margin-top:12px;overflow:auto;flex:1;border-top:1px solid rgba(255,255,255,0.03);padding-top:8px}
+    .report-item{padding:8px;border-radius:6px;background:rgba(255,255,255,0.02);margin-bottom:8px;cursor:pointer}
+    .report-item small{opacity:0.7}
+
+    .submit{margin-top:12px}
+    .submit textarea{width:100%;height:72px;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+    .submit button{margin-top:8px;width:100%;padding:10px;border-radius:6px;background:var(--sel);border:none;color:#041226;font-weight:600;cursor:pointer}
+
+    /* main: map area */
+    .main{flex:1;display:flex;flex-direction:column}
+    .viewer-wrap{flex:1;background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);border-radius:10px;padding:10px;box-sizing:border-box;display:flex;flex-direction:column}
+    .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+    .instructions{font-size:13px;opacity:0.9}
+
+    .pan-area{flex:1;border-radius:8px;overflow:auto;background:#041123;border:1px solid rgba(255,255,255,0.02);position:relative}
+    /* big canvas inside scrollable area */
+    .canvas{width:1600px;height:1000px;min-width:1600px;min-height:1000px;background:linear-gradient(180deg,#00101a 0%, #001824 100%);}
+
+    svg{display:block;width:100%;height:100%}
+    .line{stroke:rgba(255,255,255,0.35);stroke-width:1.2;fill:none;transition:stroke 120ms, stroke-width 120ms, opacity 120ms}
+    .node{fill:rgba(255,255,255,0.9);opacity:0.95;cursor:pointer}
+    .node.city{fill:#b9d3ff;}
+
+    /* hover */
+    .line.hover{stroke:var(--accent);stroke-width:2.6}
+    .node.hover{r:8px;transform:scale(1.1)}
+
+    /* selected */
+    .line.selected{stroke:var(--sel);stroke-width:3.2;opacity:1}
+    .node.selected{stroke:var(--sel);stroke-width:2;fill:#fff}
+
+    .meta{margin-top:8px;font-size:13px;color:#cfe8ff}
+
+    footer{font-size:12px;opacity:0.7;margin-top:6px}
+
+    @media (max-width:900px){.app{flex-direction:column}.sidebar{width:100%;height:240px;order:2}.main{order:1}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <h2>NASA Inclusion — MVP</h2>
+      <div class="controls">
+        <button id="view-space" class="active">Plano Espacial</button>
+        <button id="view-city">Mapa da Cidade</button>
+      </div>
+      <div class="legend">
+        <div><strong>Interação</strong>: passe o mouse para sublinhar; clique para marcar. Use a área para navegar (scroll/arrastar).</div>
+      </div>
+
+      <div class="submit">
+        <label for="note">Observação da análise</label>
+        <textarea id="note" placeholder="Descreva sua hipótese / padrão..."></textarea>
+        <button id="save-report">Enviar relatório</button>
+      </div>
+
+      <div class="reports" id="reports-list">
+        <h3 style="margin-top:0">Relatórios</h3>
+        <!-- populated dynamically -->
+      </div>
+      <footer>Dados fictícios — MVP para demo</footer>
+    </aside>
+
+    <main class="main">
+      <div class="viewer-wrap">
+        <div class="toolbar">
+          <div class="instructions">Escolha um mapa — marque linhas e nós — salve seu relatório.</div>
+        </div>
+
+        <div class="pan-area" id="panArea">
+          <div class="canvas" id="canvas">
+            <!-- SVG maps go here -->
+            <svg id="svgRoot" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000">
+              <!-- two groups; we will show/hide by JS -->
+              <g id="spaceView">
+                <!-- background stars -->
+                <g id="stars">
+                  <!-- generate points -->
+                </g>
+                <!-- constellations (lines) -->
+                <g id="constellations"></g>
+              </g>
+
+              <g id="cityView" style="display:none">
+                <rect x="0" y="0" width="1600" height="1000" fill="#031021"/>
+                <g id="streets"></g>
+                <g id="blocks"></g>
+              </g>
+            </svg>
+          </div>
+        </div>
+
+        <div class="meta">Selecionados: <span id="selectedCount">0</span></div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // MVP logic: generate fake data, enable hover & click to toggle selection, save reports to localStorage
+    (function(){
+      const svg = document.getElementById('svgRoot');
+      const spaceGroup = document.getElementById('spaceView');
+      const cityGroup = document.getElementById('cityView');
+      const starsGroup = document.getElementById('stars');
+      const constellationsGroup = document.getElementById('constellations');
+      const streetsGroup = document.getElementById('streets');
+      const blocksGroup = document.getElementById('blocks');
+      const panArea = document.getElementById('panArea');
+
+      let currentView = 'space';
+      const selected = new Set();
+
+      // helper to create SVG elements
+      function create(tag, attrs){
+        const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+        for(const k in attrs) el.setAttribute(k, attrs[k]);
+        return el;
+      }
+
+      // generate fake stars
+      const starCount = 120;
+      const starPositions = [];
+      for(let i=0;i<starCount;i++){
+        const x = 80 + Math.random()*(1440);
+        const y = 80 + Math.random()*(840);
+        starPositions.push({id:`star-${i}`,x,y});
+        const c = create('circle',{cx:x,cy:y,r:Math.random()*1.8+0.8,class:'node star','data-id':`star-${i}`});
+        starsGroup.appendChild(c);
+      }
+
+      // fake constellations: choose some star sequences
+      constellationsGroup.innerHTML='';
+      for(let k=0;k<18;k++){
+        const len = 3 + Math.floor(Math.random()*5);
+        const idxs = [];
+        for(let j=0;j<len;j++) idxs.push(Math.floor(Math.random()*starPositions.length));
+        const pathPoints = idxs.map(i=>`${starPositions[i].x},${starPositions[i].y}`).join(' ');
+        const line = create('polyline',{points:pathPoints,class:'line','data-id':`cons-${k}`});
+        // store node references for easier restoration
+        line.dataset.nodes = idxs.map(i=>starPositions[i].id).join(',');
+        constellationsGroup.appendChild(line);
+      }
+
+      // city: grid of streets and blocks
+      const cols=8, rows=6; const blockW=160, blockH=140; const marginX=80, marginY=60;
+      blocksGroup.innerHTML=''; streetsGroup.innerHTML='';
+      for(let r=0;r<rows;r++){
+        for(let c=0;c<cols;c++){
+          const x = marginX + c*blockW;
+          const y = marginY + r*blockH;
+          const id = `block-${r}-${c}`;
+          const rect = create('rect',{x:x+8,y:y+8,width:blockW-16,height:blockH-16,rx:6,ry:6,fill:'rgba(255,255,255,0.02)',class:'node city','data-id':id});
+          blocksGroup.appendChild(rect);
+        }
+      }
+      // vertical streets
+      for(let c=0;c<=cols;c++){
+        const x = marginX + c*blockW - 8;
+        const id = `street-v-${c}`;
+        const line = create('line',{x1:x,y1:marginY-8,x2:x,y2:marginY+rows*blockH+8,class:'line','data-id':id});
+        streetsGroup.appendChild(line);
+      }
+      // horizontal
+      for(let r=0;r<=rows;r++){
+        const y = marginY + r*blockH -8;
+        const id = `street-h-${r}`;
+        const line = create('line',{x1:marginX-8,y1:y,x2:marginX+cols*blockW+8,y2:y,class:'line','data-id':id});
+        streetsGroup.appendChild(line);
+      }
+
+      // interaction helpers
+      function onHoverIn(e){
+        const t = e.target;
+        if(t.classList && t.classList.contains('line')){
+          if(!t.classList.contains('selected')) t.classList.add('hover');
+        } else if(t.classList && t.classList.contains('node')){
+          if(!t.classList.contains('selected')) t.classList.add('hover');
+        }
+      }
+      function onHoverOut(e){
+        const t = e.target; if(!t) return;
+        if(t.classList && t.classList.contains('line')) t.classList.remove('hover');
+        if(t.classList && t.classList.contains('node')) t.classList.remove('hover');
+      }
+
+      function toggleSelect(el){
+        const id = el.getAttribute('data-id');
+        if(!id) return;
+        if(el.classList.contains('selected')){
+          el.classList.remove('selected'); selected.delete(id);
+        } else {
+          el.classList.add('selected'); selected.add(id);
+        }
+        updateSelectedCount();
+      }
+
+      function attachInteractions(root){
+        const lines = root.querySelectorAll('.line');
+        const nodes = root.querySelectorAll('.node');
+        lines.forEach(l=>{
+          l.addEventListener('mouseover', onHoverIn);
+          l.addEventListener('mouseout', onHoverOut);
+          l.addEventListener('click', (ev)=>{ ev.stopPropagation(); toggleSelect(l); });
+        });
+        nodes.forEach(n=>{
+          n.addEventListener('mouseover', onHoverIn);
+          n.addEventListener('mouseout', onHoverOut);
+          n.addEventListener('click', (ev)=>{ ev.stopPropagation(); toggleSelect(n); });
+        });
+      }
+
+      attachInteractions(spaceGroup);
+      attachInteractions(cityGroup);
+
+      function updateSelectedCount(){
+        document.getElementById('selectedCount').textContent = selected.size;
+      }
+
+      // view switches
+      document.getElementById('view-space').addEventListener('click', ()=>{setView('space')});
+      document.getElementById('view-city').addEventListener('click', ()=>{setView('city')});
+
+      function setView(v){
+        currentView = v;
+        if(v==='space'){
+          spaceGroup.style.display=''; cityGroup.style.display='none';
+          document.getElementById('view-space').classList.add('active');
+          document.getElementById('view-city').classList.remove('active');
+        } else {
+          spaceGroup.style.display='none'; cityGroup.style.display='';
+          document.getElementById('view-space').classList.remove('active');
+          document.getElementById('view-city').classList.add('active');
+        }
+        // clear selections when switching view (optional)
+        clearSelections();
+      }
+
+      // panning by dragging (scroll the container)
+      (function enableDragPan(){
+        let isDown=false, startX, startY, scrollLeft, scrollTop;
+        panArea.addEventListener('mousedown', (e)=>{
+          if(e.button!==0) return;
+          isDown=true; startX=e.clientX; startY=e.clientY; scrollLeft=panArea.scrollLeft; scrollTop=panArea.scrollTop; panArea.style.cursor='grabbing';
+        });
+        window.addEventListener('mousemove',(e)=>{
+          if(!isDown) return;
+          e.preventDefault();
+          const dx = e.clientX - startX; const dy = e.clientY - startY;
+          panArea.scrollLeft = scrollLeft - dx; panArea.scrollTop = scrollTop - dy;
+        });
+        window.addEventListener('mouseup', ()=>{ isDown=false; panArea.style.cursor=''; });
+      })();
+
+      // Reports storage
+      const reportsKey = 'mvp_reports_v1';
+      function loadReports(){
+        const raw = localStorage.getItem(reportsKey); if(!raw) return [];
+        try{ return JSON.parse(raw);}catch(e){return []}
+      }
+      function saveReports(arr){ localStorage.setItem(reportsKey, JSON.stringify(arr)); renderReports(); }
+
+      function createReport(note){
+        const r = {id:Date.now(), view:currentView, note:note||'', items:Array.from(selected), ts:new Date().toISOString()};
+        const arr = loadReports(); arr.unshift(r); saveReports(arr); return r;
+      }
+
+      function renderReports(){
+        const container = document.getElementById('reports-list');
+        const arr = loadReports();
+        // keep header
+        container.innerHTML = '<h3 style="margin-top:0">Relatórios</h3>';
+        arr.forEach(r=>{
+          const div = document.createElement('div'); div.className='report-item'; div.dataset.rid = r.id;
+          div.innerHTML = `<div><strong>${r.view.toUpperCase()}</strong> — <small>${new Date(r.ts).toLocaleString()}</small></div><div style="margin-top:6px">${(r.note||'—').slice(0,140)}</div>`;
+          div.addEventListener('click', ()=>{restoreReport(r.id)});
+          container.appendChild(div);
+        });
+      }
+
+      // restore: clear current selections, then select elements by id and scroll into view
+      function clearSelections(){
+        selected.clear();
+        svg.querySelectorAll('.selected').forEach(el=>el.classList.remove('selected'));
+        updateSelectedCount();
+      }
+
+      function restoreReport(rid){
+        const arr = loadReports(); const r = arr.find(x=>x.id===rid); if(!r) return;
+        setView(r.view);
+        clearSelections();
+        // mark items
+        r.items.forEach(id=>{
+          const el = svg.querySelector(`[data-id='${id}']`);
+          if(el){ el.classList.add('selected'); selected.add(id); }
+        });
+        updateSelectedCount();
+        // scroll to first element
+        if(r.items.length>0){
+          const el = svg.querySelector(`[data-id='${r.items[0]}']`);
+          if(el){
+            // get bounding box and center in panArea
+            const bbox = el.getBBox();
+            const cx = bbox.x + bbox.width/2; const cy = bbox.y + bbox.height/2;
+            const canvasEl = document.getElementById('canvas');
+            const rect = canvasEl.getBoundingClientRect();
+            panArea.scrollLeft = Math.max(0, cx - panArea.clientWidth/2);
+            panArea.scrollTop = Math.max(0, cy - panArea.clientHeight/2);
+          }
+        }
+      }
+
+      document.getElementById('save-report').addEventListener('click', ()=>{
+        const note = document.getElementById('note').value.trim();
+        if(selected.size===0 && note.length===0){ alert('Marque ao menos um item ou escreva uma observação antes de enviar.'); return; }
+        createReport(note);
+        document.getElementById('note').value='';
+        clearSelections();
+        alert('Relatório enviado!');
+      });
+
+      // initial render
+      renderReports();
+
+    })();
+  </script>
+</body>
+</html>
